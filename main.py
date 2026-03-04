@@ -277,7 +277,11 @@ def wait_for_recording_start(
     return False
 
 
-def finalize_recording(screen_file: Path, av_file: Path, output_file: Path) -> tuple[bool, str]:
+def finalize_recording(
+    screen_file: Path,
+    av_file: Path,
+    output_file: Path,
+) -> tuple[bool, str]:
     if not screen_file.exists():
         return False, f"Screen recording not found: {screen_file}"
     if not av_file.exists():
@@ -348,7 +352,6 @@ def start_recording(output_dir: Path) -> int:
 
     clear_state()
     output_dir.mkdir(parents=True, exist_ok=True)
-
     if not shutil.which("ffmpeg"):
         print("Unable to start recording.")
         print("ffmpeg is required.")
