@@ -1,6 +1,6 @@
 # vlog
 
-CLI for recording Linux desktop videos with webcam picture-in-picture, synced audio, playback, and recording management.
+CLI for recording Linux desktop videos with webcam picture-in-picture, synced audio, trim UI, and direct publish to X + LinkedIn.
 
 ## Requirements
 
@@ -19,13 +19,18 @@ Start recording:
 vlog r
 ```
 
-Stop recording and finalize output:
+Stop recording, trim, and publish:
 
 ```bash
 vlog s
 ```
 
-`vlog s` now opens an interactive trim TUI after finalization.
+`vlog s` flow:
+- Finalize recording
+- Open trim TUI
+- Prompt for accompanying post text
+- If you type `v`, open `$EDITOR` to compose the post text
+- Publish video + post text to X and LinkedIn
 
 Webcam align preview (live):
 
@@ -55,12 +60,32 @@ vlog -h
 
 ## Output and behavior
 
-- Default output directory: `~/Vlogs`
+- Default output directory: `~/.cache/vlog/recordings`
 - Output filename format: `vlog_YYYYMMDD_HHMMSS.mp4`
 - Single active recording enforced
 - Single CLI instance lock enforced
 - Progress messages shown during start/stop/finalization
 - Post-stop interactive trim editor is launched in TTY mode
+
+## Config (XDG)
+
+- Config file: `~/.config/vlog/config.json`
+- Auto-created on first publish flow if missing.
+
+Default config:
+
+```json
+{
+  "publish": {
+    "x": "x",
+    "linkedin": "linkedin"
+  }
+}
+```
+
+Each publish command must accept:
+- Arg 1: post text
+- Arg 2: video file path
 
 ## Trim editor (after `vlog s`)
 
@@ -71,7 +96,7 @@ After recording is saved, a terminal trim UI opens so you can crop precisely by 
 - `space`: play/pause from cursor
 - `a` (while paused): discard everything before cursor (set left trim edge)
 - `e` (while paused): discard everything after cursor (set right trim edge)
-- `Enter`: apply trim
+- `Enter`: apply trim and continue to publish prompt
 - `q`: cancel trim (keep original finalized recording)
 
 The timer display shows current cursor time and selected kept range.
@@ -92,7 +117,9 @@ The timer display shows current cursor time and selected kept range.
 - Using webcam-capture audio track (keeps webcam/audio sync)
 - Applying audio post-processing: noise reduction + deeper/bassier voice EQ
 - Web-optimized H.264/AAC output settings
-- Opening trim TUI for optional manual crop before final output is kept
+- Opening trim TUI for optional manual crop
+- Prompting for publication text
+- Publishing to configured targets from `config.json`
 
 ## Video style
 

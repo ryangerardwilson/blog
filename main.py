@@ -4,6 +4,7 @@ import curses
 import fcntl
 import json
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -22,8 +23,14 @@ LATEST_RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 INSTALL_SCRIPT_URL = f"https://raw.githubusercontent.com/{REPO}/main/install.sh"
 
 LOCK_FILE = Path("/tmp/vlog_recorder_cli.lock")
-STATE_FILE = Path.home() / ".vlog_recorder_state.json"
-DEFAULT_OUTPUT_DIR = Path.home() / "Vlogs"
+XDG_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+XDG_CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
+XDG_STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+CONFIG_DIR = XDG_CONFIG_HOME / APP
+CONFIG_FILE = CONFIG_DIR / "config.json"
+STATE_DIR = XDG_STATE_HOME / APP
+STATE_FILE = STATE_DIR / "recorder_state.json"
+DEFAULT_OUTPUT_DIR = XDG_CACHE_HOME / APP / "recordings"
 WEB_FPS = "24"
 WEB_MAX_WIDTH = "1280"
 WEB_CRF = "28"
@@ -32,11 +39,20 @@ WEB_AUDIO_BITRATE = "128k"
 WEBCAM_WIDTH = "360"
 
 
+def default_config() -> dict:
+    return {
+        "publish": {
+            "x": "x",
+            "linkedin": "linkedin",
+        }
+    }
+
+
 def print_usage_guide() -> None:
     print(
         "Usage:\n"
         "  vlog r                        Start recording\n"
-        "  vlog s                        Stop recording (opens trim TUI)\n"
+        "  vlog s                        Stop recording, trim, and publish\n"
         "  vlog a                        Live webcam align preview\n"
         "  vlog p -l                     Play latest recording (detached)\n"
         "  vlog c                        Clear all recordings\n"
@@ -45,7 +61,10 @@ def print_usage_guide() -> None:
         "  vlog -h                       Show this help\n"
         "\n"
         "Options:\n"
-        "  -o, --output-dir <path>       Recording directory (default: ~/Vlogs)\n"
+        f"  -o, --output-dir <path>       Recording directory (default: {DEFAULT_OUTPUT_DIR})\n"
+        f"\nConfig:\n"
+        f"  {CONFIG_FILE} (auto-created)\n"
+        "  publish.x / publish.linkedin control publish commands\n"
     )
 
 
@@ -133,7 +152,93 @@ def clear_state() -> None:
 
 
 def save_state(state: dict) -> None:
-    STATE_FILE.write_text(json.dumps(state))
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(json.dumps(state))
+    except OSError:
+        pass
+
+
+def load_or_init_config() -> dict:
+    defaults = default_config()
+    if not CONFIG_FILE.exists():
+        try:
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            CONFIG_FILE.write_text(json.dumps(defaults, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            return defaults
+        return defaults
+    try:
+        parsed = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return defaults
+    if not isinstance(parsed, dict):
+        return defaults
+    publish = parsed.get("publish")
+    if not isinstance(publish, dict):
+        parsed["publish"] = defaults["publish"]
+    return parsed
+
+
+def _publish_command_tokens(value) -> list[str]:
+    if isinstance(value, str):
+        return shlex.split(value)
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return list(value)
+    return []
+
+
+def _compose_text_in_editor(initial_text: str = "") -> str:
+    editor = os.getenv("EDITOR", "vim").strip()
+    editor_cmd = shlex.split(editor) if editor else ["vim"]
+    if not editor_cmd:
+        editor_cmd = ["vim"]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8") as tmp:
+        temp_path = Path(tmp.name)
+        if initial_text:
+            tmp.write(initial_text + "\n")
+    try:
+        try:
+            subprocess.run(editor_cmd + [str(temp_path)], check=False)
+        except FileNotFoundError:
+            raise SystemExit(f"Editor not found: {editor_cmd[0]}")
+        content = temp_path.read_text(encoding="utf-8").strip()
+        return content
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def prompt_publish_text() -> str | None:
+    print("")
+    print("Enter accompanying post text (type 'v' to open $EDITOR, blank to skip publish):")
+    raw = input("> ").strip()
+    if not raw:
+        return None
+    if raw.lower() == "v":
+        text = _compose_text_in_editor("")
+        return text if text else None
+    return raw
+
+
+def publish_recording(video_file: Path, post_text: str, config: dict) -> tuple[bool, list[str]]:
+    publish = config.get("publish") if isinstance(config, dict) else None
+    if not isinstance(publish, dict):
+        return False, ["Invalid config: missing object at key 'publish'."]
+
+    failures: list[str] = []
+    for target_name in ("x", "linkedin"):
+        tokens = _publish_command_tokens(publish.get(target_name))
+        if not tokens:
+            failures.append(f"{target_name}: missing publish command in config")
+            continue
+        cmd = tokens + [post_text, str(video_file)]
+        proc = subprocess.run(cmd)
+        if proc.returncode != 0:
+            failures.append(f"{target_name}: command failed with exit code {proc.returncode}")
+    return len(failures) == 0, failures
 
 
 def detect_screen_size() -> str | None:
@@ -505,6 +610,29 @@ def launch_trim_tui_and_apply(video_file: Path) -> tuple[bool, str]:
     return True, f"Trim applied: {trim_start:.2f}s -> {trim_end:.2f}s"
 
 
+def handle_publish_flow(video_file: Path) -> None:
+    trim_ok, trim_msg = launch_trim_tui_and_apply(video_file)
+    if trim_msg:
+        print(trim_msg)
+    if not trim_ok:
+        print("Post-trim failed.")
+        return
+
+    post_text = prompt_publish_text()
+    if not post_text:
+        print("Skipped publish (no post text provided).")
+        return
+
+    config = load_or_init_config()
+    ok, failures = publish_recording(video_file, post_text, config)
+    if ok:
+        print("Published to x and linkedin.")
+        return
+    print("Publish finished with errors:")
+    for failure in failures:
+        print(f"- {failure}")
+
+
 def finalize_recording(
     screen_file: Path,
     av_file: Path,
@@ -632,7 +760,7 @@ def start_recording(output_dir: Path) -> int:
 
     av_ready = wait_for_recording_start(av_proc, av_file, warmup_only=True, timeout=8.0)
     if not av_ready:
-        print("Webcam+audio recorder did not initialize in time. Check ~/Vlogs/vlog_recorder.log")
+        print(f"Webcam+audio recorder did not initialize in time. Check {log_file}")
         if av_proc.poll() is None:
             try:
                 os.kill(av_proc.pid, signal.SIGINT)
@@ -652,7 +780,7 @@ def start_recording(output_dir: Path) -> int:
 
     screen_ready = wait_for_recording_start(screen_proc, screen_file, warmup_only=screen_warmup_only, timeout=8.0)
     if not screen_ready:
-        print("Screen recorder did not initialize in time. Check ~/Vlogs/vlog_recorder.log")
+        print(f"Screen recorder did not initialize in time. Check {log_file}")
         if screen_proc.poll() is None:
             try:
                 os.kill(screen_proc.pid, signal.SIGINT)
@@ -735,13 +863,11 @@ def stop_recording() -> int:
             if ok:
                 if output_file and Path(output_file).exists():
                     print(f"Saved: {output_file} (grayscale + webcam overlay)")
-                    trim_ok, trim_msg = launch_trim_tui_and_apply(Path(output_file))
-                    if trim_msg:
-                        print(trim_msg)
-                    if not trim_ok:
-                        print("Post-trim failed.")
+                    handle_publish_flow(Path(output_file))
                 else:
-                    print("Recorder stopped, but output file was not produced. Check ~/Vlogs/vlog_recorder.log")
+                    print(
+                        f"Recorder stopped, but output file was not produced. Check {Path(output_file).parent / 'vlog_recorder.log'}"
+                    )
             else:
                 print("Finalization failed.")
                 if err:
@@ -789,13 +915,11 @@ def stop_recording() -> int:
     if ok:
         if output_file and Path(output_file).exists():
             print(f"Saved: {output_file} (grayscale + webcam overlay)")
-            trim_ok, trim_msg = launch_trim_tui_and_apply(Path(output_file))
-            if trim_msg:
-                print(trim_msg)
-            if not trim_ok:
-                print("Post-trim failed.")
+            handle_publish_flow(Path(output_file))
         else:
-            print("Recorder stopped, but output file was not produced. Check ~/Vlogs/vlog_recorder.log")
+            print(
+                f"Recorder stopped, but output file was not produced. Check {Path(output_file).parent / 'vlog_recorder.log'}"
+            )
     else:
         print("Finalization failed after forced stop.")
         if err:
@@ -836,7 +960,9 @@ def play_latest_recording(output_dir: Path) -> int:
 
 def clear_recordings(output_dir: Path) -> int:
     state = load_state()
-    if state and pid_exists(int(state.get("pid", -1))):
+    screen_pid = int(state.get("screen_pid", -1)) if state else -1
+    av_pid = int(state.get("av_pid", -1)) if state else -1
+    if state and (pid_exists(screen_pid) or pid_exists(av_pid)):
         print("Cannot clear recordings while recording is active. Run: vlog s")
         return 1
 
@@ -906,7 +1032,7 @@ def main() -> int:
         "-o",
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
-        help="Output directory for recordings (default: ~/Vlogs)",
+        help=f"Output directory for recordings (default: {DEFAULT_OUTPUT_DIR})",
     )
     parser.add_argument("command", nargs="?", choices=["r", "s", "c", "p", "a"])
     parser.add_argument("-l", "--latest", action="store_true", help="Used with 'p' to play latest")
