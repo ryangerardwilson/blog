@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import curses
 import fcntl
 import json
 import os
@@ -35,7 +36,7 @@ def print_usage_guide() -> None:
     print(
         "Usage:\n"
         "  vlog r                        Start recording\n"
-        "  vlog s                        Stop recording\n"
+        "  vlog s                        Stop recording (opens trim TUI)\n"
         "  vlog a                        Live webcam align preview\n"
         "  vlog p -l                     Play latest recording (detached)\n"
         "  vlog c                        Clear all recordings\n"
@@ -277,6 +278,233 @@ def wait_for_recording_start(
     return False
 
 
+def probe_duration_seconds(media_file: Path) -> float:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(media_file),
+    ]
+    try:
+        out = subprocess.check_output(cmd, text=True).strip()
+        return float(out)
+    except Exception:
+        return 0.0
+
+
+def trim_video_precise(media_file: Path, trim_start: float, trim_end: float) -> tuple[bool, str]:
+    if trim_end <= trim_start:
+        return False, "Invalid trim range."
+    tmp_output = media_file.with_suffix(".trim.mp4")
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        f"{trim_start:.3f}",
+        "-i",
+        str(media_file),
+        "-t",
+        f"{(trim_end - trim_start):.3f}",
+        "-c:v",
+        "libx264",
+        "-preset",
+        WEB_PRESET,
+        "-crf",
+        WEB_CRF,
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        WEB_AUDIO_BITRATE,
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+        "-movflags",
+        "+faststart",
+        str(tmp_output),
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if proc.returncode != 0 or not tmp_output.exists():
+        return False, "Failed to trim video."
+    tmp_output.replace(media_file)
+    return True, ""
+
+
+def run_trim_tui(video_file: Path) -> tuple[bool, float, float]:
+    duration = probe_duration_seconds(video_file)
+    if duration <= 0:
+        return False, 0.0, 0.0
+
+    step = 0.1
+    cursor = 0.0
+    trim_start = 0.0
+    trim_end = duration
+    paused = False
+    play_anchor_ts = 0.0
+    play_anchor_wall = 0.0
+    audio_proc: subprocess.Popen | None = None
+
+    def stop_audio() -> None:
+        nonlocal audio_proc
+        if audio_proc and audio_proc.poll() is None:
+            try:
+                os.kill(audio_proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        audio_proc = None
+
+    def play_audio_at(ts: float) -> None:
+        nonlocal audio_proc, play_anchor_ts, play_anchor_wall
+        stop_audio()
+        if not shutil.which("ffplay"):
+            return
+        safe_ts = min(max(0.0, ts), max(0.0, duration - 0.06))
+        play_anchor_ts = safe_ts
+        play_anchor_wall = time.monotonic()
+        cmd = [
+            "ffplay",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nodisp",
+            "-vn",
+            "-seek2any",
+            "1",
+            "-ss",
+            f"{safe_ts:.3f}",
+            str(video_file),
+        ]
+        audio_proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    def draw(stdscr: curses.window) -> None:
+        stdscr.erase()
+        _, width = stdscr.getmaxyx()
+
+        status = "paused" if paused else "playing"
+        stdscr.addstr(0, 0, "Trim TUI: h/l seek  H/L start/end  space play/pause  a cut-left  e cut-right  Enter apply  q cancel")
+        stdscr.addstr(1, 0, f"Playback: {status}")
+        stdscr.addstr(3, 0, f"Timer: {cursor:.2f}s / {duration:.2f}s")
+        stdscr.addstr(
+            5,
+            0,
+            f"cursor={cursor:.2f}s  keep={trim_start:.2f}s -> {trim_end:.2f}s  duration={duration:.2f}s",
+        )
+        stdscr.addstr(6, 0, "Pause first, then press 'a'/'e' to cut before/after timer.")
+        stdscr.refresh()
+
+    def ui(stdscr: curses.window) -> tuple[bool, float, float]:
+        nonlocal cursor, trim_start, trim_end, paused
+
+        def sync_cursor_from_playhead() -> None:
+            nonlocal cursor
+            cursor = min(duration, play_anchor_ts + (time.monotonic() - play_anchor_wall))
+
+        def consume_repeated_key(first_key: int) -> int:
+            count = 1
+            stdscr.timeout(0)
+            try:
+                while True:
+                    nxt = stdscr.getch()
+                    if nxt == first_key:
+                        count += 1
+                        continue
+                    if nxt == -1:
+                        break
+                    curses.ungetch(nxt)
+                    break
+            finally:
+                stdscr.timeout(50)
+            return count
+
+        curses.curs_set(0)
+        stdscr.nodelay(True)
+        stdscr.timeout(50)
+        play_audio_at(cursor)
+        paused = False
+        while True:
+            if not paused:
+                sync_cursor_from_playhead()
+                if cursor >= duration:
+                    cursor = duration
+                    stop_audio()
+                    paused = True
+            draw(stdscr)
+            ch = stdscr.getch()
+            if ch == -1:
+                continue
+            if ch in (ord("q"), 27):
+                return False, 0.0, 0.0
+            if ch in (10, 13):
+                if trim_end <= trim_start:
+                    continue
+                return True, trim_start, trim_end
+            if ch == ord(" "):
+                if paused:
+                    play_audio_at(cursor)
+                    paused = False
+                else:
+                    sync_cursor_from_playhead()
+                    stop_audio()
+                    paused = True
+            elif ch == ord("h"):
+                repeats = consume_repeated_key(ord("h"))
+                cursor = max(0.0, cursor - (step * repeats))
+                if not paused:
+                    play_audio_at(cursor)
+            elif ch == ord("l"):
+                repeats = consume_repeated_key(ord("l"))
+                cursor = min(duration, cursor + (step * repeats))
+                if not paused:
+                    play_audio_at(cursor)
+            elif ch == ord("H"):
+                cursor = 0.0
+                if not paused:
+                    play_audio_at(cursor)
+            elif ch == ord("L"):
+                cursor = duration
+                if not paused:
+                    play_audio_at(cursor)
+            elif ch == ord("a"):
+                if paused:
+                    trim_start = min(cursor, trim_end - 0.05)
+            elif ch == ord("e"):
+                if paused:
+                    trim_end = max(cursor, trim_start + 0.05)
+
+    try:
+        return curses.wrapper(ui)
+    finally:
+        stop_audio()
+
+
+def launch_trim_tui_and_apply(video_file: Path) -> tuple[bool, str]:
+    if not video_file.exists():
+        return False, "Cannot trim: output file not found."
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return True, "Skipped trim UI (not an interactive terminal)."
+    print("")
+    print("Launching trim UI...")
+    apply_trim, trim_start, trim_end = run_trim_tui(video_file)
+    if not apply_trim:
+        return True, "Trim canceled."
+    ok, err = trim_video_precise(video_file, trim_start, trim_end)
+    if not ok:
+        return False, err
+    return True, f"Trim applied: {trim_start:.2f}s -> {trim_end:.2f}s"
+
+
 def finalize_recording(
     screen_file: Path,
     av_file: Path,
@@ -507,6 +735,11 @@ def stop_recording() -> int:
             if ok:
                 if output_file and Path(output_file).exists():
                     print(f"Saved: {output_file} (grayscale + webcam overlay)")
+                    trim_ok, trim_msg = launch_trim_tui_and_apply(Path(output_file))
+                    if trim_msg:
+                        print(trim_msg)
+                    if not trim_ok:
+                        print("Post-trim failed.")
                 else:
                     print("Recorder stopped, but output file was not produced. Check ~/Vlogs/vlog_recorder.log")
             else:
@@ -556,6 +789,11 @@ def stop_recording() -> int:
     if ok:
         if output_file and Path(output_file).exists():
             print(f"Saved: {output_file} (grayscale + webcam overlay)")
+            trim_ok, trim_msg = launch_trim_tui_and_apply(Path(output_file))
+            if trim_msg:
+                print(trim_msg)
+            if not trim_ok:
+                print("Post-trim failed.")
         else:
             print("Recorder stopped, but output file was not produced. Check ~/Vlogs/vlog_recorder.log")
     else:

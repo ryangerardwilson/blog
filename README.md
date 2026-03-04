@@ -25,6 +25,8 @@ Stop recording and finalize output:
 vlog s
 ```
 
+`vlog s` now opens an interactive trim TUI after finalization.
+
 Webcam align preview (live):
 
 ```bash
@@ -58,6 +60,21 @@ vlog -h
 - Single active recording enforced
 - Single CLI instance lock enforced
 - Progress messages shown during start/stop/finalization
+- Post-stop interactive trim editor is launched in TTY mode
+
+## Trim editor (after `vlog s`)
+
+After recording is saved, a terminal trim UI opens so you can crop precisely by listening:
+
+- `h` / `l`: seek cursor backward/forward by `0.1s`
+- `H` / `L`: jump cursor to start/end
+- `space`: play/pause from cursor
+- `a` (while paused): discard everything before cursor (set left trim edge)
+- `e` (while paused): discard everything after cursor (set right trim edge)
+- `Enter`: apply trim
+- `q`: cancel trim (keep original finalized recording)
+
+The timer display shows current cursor time and selected kept range.
 
 ## Recording pipeline
 
@@ -75,6 +92,7 @@ vlog -h
 - Using webcam-capture audio track (keeps webcam/audio sync)
 - Applying audio post-processing: noise reduction + deeper/bassier voice EQ
 - Web-optimized H.264/AAC output settings
+- Opening trim TUI for optional manual crop before final output is kept
 
 ## Video style
 
