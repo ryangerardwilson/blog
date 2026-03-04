@@ -46,7 +46,7 @@ vlog -h
 Notes:
 
 - Default output directory is `~/Vlogs`
-- Recordings are grayscale and web-optimized (HD-light settings)
+- Recordings are grayscale, web-optimized (HD-light settings), and include default-device audio
 - Only one active recording is allowed at a time
 
 ## Install from releases

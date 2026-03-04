@@ -27,6 +27,7 @@ WEB_FPS = "24"
 WEB_MAX_WIDTH = "1280"
 WEB_CRF = "28"
 WEB_PRESET = "veryfast"
+WEB_AUDIO_BITRATE = "128k"
 
 
 def print_usage_guide() -> None:
@@ -165,7 +166,7 @@ def build_recorder_command(output_file: Path) -> tuple[list[str] | None, str | N
     session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
 
     if wayland_display and shutil.which("wf-recorder"):
-        return ["wf-recorder", "-f", str(output_file)], "wf-recorder", None
+        return ["wf-recorder", "--audio", "-f", str(output_file)], "wf-recorder", None
 
     if wayland_display or session_type == "wayland":
         return (
@@ -182,6 +183,10 @@ def build_recorder_command(output_file: Path) -> tuple[list[str] | None, str | N
         cmd.extend([
             "-i",
             display,
+            "-f",
+            "pulse",
+            "-i",
+            "default",
             "-vf",
             f"fps={WEB_FPS},scale='min({WEB_MAX_WIDTH},iw)':-2:flags=lanczos,format=gray",
             "-c:v",
@@ -192,6 +197,14 @@ def build_recorder_command(output_file: Path) -> tuple[list[str] | None, str | N
             WEB_CRF,
             "-pix_fmt",
             "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            WEB_AUDIO_BITRATE,
+            "-ac",
+            "2",
+            "-ar",
+            "48000",
             "-movflags",
             "+faststart",
             str(output_file),
@@ -268,6 +281,10 @@ def convert_to_grayscale(input_file: Path, output_file: Path) -> tuple[bool, str
         "-y",
         "-i",
         str(input_file),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
         "-vf",
         f"fps={WEB_FPS},scale='min({WEB_MAX_WIDTH},iw)':-2:flags=lanczos,format=gray",
         "-c:v",
@@ -278,6 +295,10 @@ def convert_to_grayscale(input_file: Path, output_file: Path) -> tuple[bool, str
         WEB_CRF,
         "-pix_fmt",
         "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        WEB_AUDIO_BITRATE,
         "-movflags",
         "+faststart",
         str(tmp_output),
