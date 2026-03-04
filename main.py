@@ -17,12 +17,12 @@ from pathlib import Path
 
 __version__ = "0.1.0"
 
-APP = "vlog"
-REPO = "ryangerardwilson/vlog"
+APP = "blog"
+REPO = "ryangerardwilson/blog"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 INSTALL_SCRIPT_URL = f"https://raw.githubusercontent.com/{REPO}/main/install.sh"
 
-LOCK_FILE = Path("/tmp/vlog_recorder_cli.lock")
+LOCK_FILE = Path("/tmp/blog_recorder_cli.lock")
 XDG_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
 XDG_CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
 XDG_STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
@@ -51,17 +51,21 @@ def default_config() -> dict:
 def print_usage_guide() -> None:
     print(
         "Usage:\n"
-        "  vlog r                        Start recording\n"
-        "  vlog s                        Stop recording, trim, and publish\n"
-        "  vlog a                        Live webcam align preview\n"
-        "  vlog p -l                     Play latest recording (detached)\n"
-        "  vlog c                        Clear all recordings\n"
-        "  vlog -v                       Print version\n"
-        "  vlog -u                       Upgrade to latest version\n"
-        "  vlog -h                       Show this help\n"
+        "  blog \"post text\"              Publish text to all configured platforms\n"
+        "  blog -e                       Compose text in $EDITOR and publish\n"
+        "  blog -m /path/to/media.mp4    Publish media only (or with text/-e)\n"
+        "  blog -rec                     Start recording\n"
+        "  blog -stp                     Stop recording, trim, and publish\n"
+        "  blog -v                       Print version\n"
+        "  blog -u                       Upgrade to latest version\n"
+        "  blog -h                       Show this help\n"
         "\n"
         "Options:\n"
         f"  -o, --output-dir <path>       Recording directory (default: {DEFAULT_OUTPUT_DIR})\n"
+        "  -m, --media <path>            Media to publish with post\n"
+        "  -e, --edit                    Compose post in $EDITOR\n"
+        "  -rec                          Start recording\n"
+        "  -stp                          Stop recording and run trim+publish flow\n"
         f"\nConfig:\n"
         f"  {CONFIG_FILE} (auto-created)\n"
         "  publish.x / publish.linkedin control publish commands\n"
@@ -188,6 +192,53 @@ def _publish_command_tokens(value) -> list[str]:
     return []
 
 
+def _resolve_tokens(tokens: list[str], text: str | None, media_file: Path | None) -> list[str]:
+    resolved: list[str] = []
+    media_value = str(media_file) if media_file is not None else None
+    for token in tokens:
+        if token == "{text}":
+            if text:
+                resolved.append(text)
+            continue
+        if token == "{media}":
+            if media_value:
+                resolved.append(media_value)
+            continue
+        resolved.append(token)
+    return resolved
+
+
+def _build_publish_command(value, text: str | None, media_file: Path | None) -> list[str]:
+    # Advanced config form:
+    # {
+    #   "command": ["mycli", "publish"],
+    #   "text_args": ["--caption", "{text}"],
+    #   "media_args": ["--file", "{media}"]
+    # }
+    if isinstance(value, dict):
+        base = _publish_command_tokens(value.get("command"))
+        if not base:
+            return []
+        cmd = list(base)
+        if text:
+            cmd.extend(_resolve_tokens(_publish_command_tokens(value.get("text_args")), text, media_file))
+        if media_file is not None:
+            cmd.extend(_resolve_tokens(_publish_command_tokens(value.get("media_args")), text, media_file))
+        return cmd
+
+    # Backward-compatible form:
+    # "x" or ["x", "--some-flag"]
+    base = _publish_command_tokens(value)
+    if not base:
+        return []
+    cmd = list(base)
+    if text is not None:
+        cmd.append(text)
+    if media_file is not None:
+        cmd.append(str(media_file))
+    return cmd
+
+
 def _compose_text_in_editor(initial_text: str = "") -> str:
     editor = os.getenv("EDITOR", "vim").strip()
     editor_cmd = shlex.split(editor) if editor else ["vim"]
@@ -223,18 +274,17 @@ def prompt_publish_text() -> str | None:
     return raw
 
 
-def publish_recording(video_file: Path, post_text: str, config: dict) -> tuple[bool, list[str]]:
+def publish_content(post_text: str | None, media_file: Path | None, config: dict) -> tuple[bool, list[str]]:
     publish = config.get("publish") if isinstance(config, dict) else None
     if not isinstance(publish, dict):
         return False, ["Invalid config: missing object at key 'publish'."]
 
     failures: list[str] = []
     for target_name in ("x", "linkedin"):
-        tokens = _publish_command_tokens(publish.get(target_name))
-        if not tokens:
+        cmd = _build_publish_command(publish.get(target_name), post_text, media_file)
+        if not cmd:
             failures.append(f"{target_name}: missing publish command in config")
             continue
-        cmd = tokens + [post_text, str(video_file)]
         proc = subprocess.run(cmd)
         if proc.returncode != 0:
             failures.append(f"{target_name}: command failed with exit code {proc.returncode}")
@@ -624,13 +674,48 @@ def handle_publish_flow(video_file: Path) -> None:
         return
 
     config = load_or_init_config()
-    ok, failures = publish_recording(video_file, post_text, config)
+    ok, failures = publish_content(post_text, video_file, config)
     if ok:
         print("Published to x and linkedin.")
         return
     print("Publish finished with errors:")
     for failure in failures:
         print(f"- {failure}")
+
+
+def _split_text_and_media_arg(text_parts: list[str], explicit_media: str | None) -> tuple[str | None, Path | None]:
+    parts = list(text_parts)
+    media = Path(explicit_media).expanduser() if explicit_media else None
+
+    if media is None and parts:
+        candidate = Path(parts[-1]).expanduser()
+        if candidate.is_file():
+            media = candidate
+            parts.pop()
+
+    text = " ".join(parts).strip()
+    return (text if text else None), media
+
+
+def publish_from_cli(text: str | None, media_file: Path | None) -> int:
+    if media_file is not None and not media_file.is_file():
+        print(f"Media file not found: {media_file}")
+        return 1
+
+    config = load_or_init_config()
+    ok, failures = publish_content(text, media_file, config)
+    if ok:
+        if text and media_file:
+            print("Published post + media to all platforms.")
+        elif media_file:
+            print("Published media to all platforms.")
+        else:
+            print("Published post to all platforms.")
+        return 0
+    print("Publish finished with errors:")
+    for failure in failures:
+        print(f"- {failure}")
+    return 1
 
 
 def finalize_recording(
@@ -702,8 +787,11 @@ def finalize_recording(
 
 def start_recording(output_dir: Path) -> int:
     state = load_state()
-    if state and pid_exists(int(state.get("pid", -1))):
-        print(f"Recording already active (pid={state['pid']}): {state.get('output_file', '')}")
+    screen_pid = int(state.get("screen_pid", -1)) if state else -1
+    av_pid = int(state.get("av_pid", -1)) if state else -1
+    if state and (pid_exists(screen_pid) or pid_exists(av_pid)):
+        active_pid = screen_pid if pid_exists(screen_pid) else av_pid
+        print(f"Recording already active (pid={active_pid}): {state.get('output_file', '')}")
         return 1
 
     clear_state()
@@ -719,11 +807,11 @@ def start_recording(output_dir: Path) -> int:
         print("No webcam device found (/dev/video*).")
         return 1
 
-    filename = f"vlog_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+    filename = f"blog_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
     output_file = output_dir / filename
     screen_file = output_dir / f"{output_file.stem}.screen.mkv"
     av_file = output_dir / f"{output_file.stem}.av.mkv"
-    log_file = output_dir / "vlog_recorder.log"
+    log_file = output_dir / "blog_recorder.log"
 
     session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
     wayland_display = os.environ.get("WAYLAND_DISPLAY")
@@ -866,7 +954,7 @@ def stop_recording() -> int:
                     handle_publish_flow(Path(output_file))
                 else:
                     print(
-                        f"Recorder stopped, but output file was not produced. Check {Path(output_file).parent / 'vlog_recorder.log'}"
+                        f"Recorder stopped, but output file was not produced. Check {Path(output_file).parent / 'blog_recorder.log'}"
                     )
             else:
                 print("Finalization failed.")
@@ -918,7 +1006,7 @@ def stop_recording() -> int:
             handle_publish_flow(Path(output_file))
         else:
             print(
-                f"Recorder stopped, but output file was not produced. Check {Path(output_file).parent / 'vlog_recorder.log'}"
+                f"Recorder stopped, but output file was not produced. Check {Path(output_file).parent / 'blog_recorder.log'}"
             )
     else:
         print("Finalization failed after forced stop.")
@@ -938,7 +1026,7 @@ def play_latest_recording(output_dir: Path) -> int:
 
     candidates = [
         p
-        for p in output_dir.glob("vlog_*.mp4")
+        for p in output_dir.glob("blog_*.mp4")
         if p.is_file() and ".tmp." not in p.name and ".color." not in p.name
     ]
     if not candidates:
@@ -963,7 +1051,7 @@ def clear_recordings(output_dir: Path) -> int:
     screen_pid = int(state.get("screen_pid", -1)) if state else -1
     av_pid = int(state.get("av_pid", -1)) if state else -1
     if state and (pid_exists(screen_pid) or pid_exists(av_pid)):
-        print("Cannot clear recordings while recording is active. Run: vlog s")
+        print("Cannot clear recordings while recording is active. Run: blog -stp")
         return 1
 
     if not output_dir.exists():
@@ -972,7 +1060,7 @@ def clear_recordings(output_dir: Path) -> int:
 
     candidates = [
         p
-        for p in output_dir.glob("vlog_*.mp4")
+        for p in output_dir.glob("blog_*.mp4")
         if p.is_file()
     ]
     if not candidates:
@@ -1028,14 +1116,20 @@ def main() -> int:
     parser.add_argument("-h", "--help", action="store_true", dest="help_flag")
     parser.add_argument("-v", "--version", action="store_true")
     parser.add_argument("-u", "--upgrade", action="store_true")
+    parser.add_argument("-e", "--edit", action="store_true", help="Compose post in $EDITOR.")
+    parser.add_argument("-m", "--media", help="Media path to publish.")
+    parser.add_argument("-rec", action="store_true", help="Start recording.")
+    parser.add_argument("-stp", action="store_true", help="Stop recording and run trim+publish flow.")
+    parser.add_argument("--align", action="store_true", help="Open webcam align preview.")
+    parser.add_argument("--play-latest", action="store_true", help="Play latest recording.")
+    parser.add_argument("--clear", action="store_true", help="Clear saved recordings.")
     parser.add_argument(
         "-o",
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
         help=f"Output directory for recordings (default: {DEFAULT_OUTPUT_DIR})",
     )
-    parser.add_argument("command", nargs="?", choices=["r", "s", "c", "p", "a"])
-    parser.add_argument("-l", "--latest", action="store_true", help="Used with 'p' to play latest")
+    parser.add_argument("text", nargs="*", help="Post text.")
 
     args = parser.parse_args()
 
@@ -1047,12 +1141,6 @@ def main() -> int:
         return 0
     if args.upgrade:
         return upgrade_to_latest()
-    if not args.command:
-        print_usage_guide()
-        return 1
-    if args.latest and args.command != "p":
-        print("The -l/--latest flag can only be used with command 'p'.")
-        return 1
 
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     with LOCK_FILE.open("w") as lock_fp:
@@ -1062,20 +1150,61 @@ def main() -> int:
             print("Another instance of this CLI is currently running.")
             return 1
 
-        if args.command == "r":
-            return start_recording(Path(args.output_dir).expanduser())
-        if args.command == "s":
-            return stop_recording()
-        if args.command == "c":
-            return clear_recordings(Path(args.output_dir).expanduser())
-        if args.command == "a":
-            return align_webcam()
-        if args.command == "p":
-            if not args.latest:
-                print("Use: vlog p -l")
+        action_flags = [
+            bool(args.rec),
+            bool(args.stp),
+            bool(args.align),
+            bool(args.play_latest),
+            bool(args.clear),
+        ]
+        if sum(action_flags) > 1:
+            print("Use only one action flag at a time: -rec, -stp, --align, --play-latest, --clear.")
+            return 1
+
+        output_dir = Path(args.output_dir).expanduser()
+
+        if args.rec:
+            if args.edit or args.media or args.text:
+                print("-rec does not accept post text/media flags.")
                 return 1
-            return play_latest_recording(Path(args.output_dir).expanduser())
-        return 1
+            return start_recording(Path(args.output_dir).expanduser())
+        if args.stp:
+            if args.edit or args.media or args.text:
+                print("-stp does not accept post text/media flags.")
+                return 1
+            return stop_recording()
+        if args.align:
+            if args.edit or args.media or args.text:
+                print("--align does not accept post text/media flags.")
+                return 1
+            return align_webcam()
+        if args.play_latest:
+            if args.edit or args.media or args.text:
+                print("--play-latest does not accept post text/media flags.")
+                return 1
+            return play_latest_recording(output_dir)
+        if args.clear:
+            if args.edit or args.media or args.text:
+                print("--clear does not accept post text/media flags.")
+                return 1
+            return clear_recordings(output_dir)
+
+        text, media_file = _split_text_and_media_arg(args.text, args.media)
+
+        if args.edit:
+            if text is not None:
+                print("Use either -e or provide text, not both.")
+                return 1
+            text = _compose_text_in_editor("")
+            if not text:
+                print("No content; cancelled.")
+                return 1
+
+        if text is None and media_file is None:
+            print_usage_guide()
+            return 1
+
+        return publish_from_cli(text, media_file)
 
 
 if __name__ == "__main__":

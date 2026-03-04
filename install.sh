@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP=vlog
-REPO="ryangerardwilson/vlog"
+APP=blog
+REPO="ryangerardwilson/blog"
 APP_HOME="$HOME/.${APP}"
 INSTALL_DIR="$APP_HOME/bin"
 APP_DIR="$APP_HOME/app"
@@ -27,7 +27,7 @@ Options:
 Examples:
   curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash
   curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s -- --version 0.1.0
-  ./install.sh --binary /path/to/vlog
+  ./install.sh --binary /path/to/blog
 USAGE
 }
 

@@ -1,0 +1,14 @@
+{
+  "publish": {
+    "x": {
+      "command": ["x"],
+      "text_args": ["{text}"],
+      "media_args": ["{media}"]
+    },
+    "linkedin": {
+      "command": ["linkedin"],
+      "text_args": ["{text}"],
+      "media_args": ["{media}"]
+    }
+  }
+}
