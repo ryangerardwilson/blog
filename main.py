@@ -32,13 +32,13 @@ WEB_PRESET = "veryfast"
 def print_usage_guide() -> None:
     print(
         "Usage:\n"
-        "  python main.py r              Start recording\n"
-        "  python main.py s              Stop recording\n"
-        "  python main.py p -l           Play latest recording (detached)\n"
-        "  python main.py c              Clear all recordings\n"
-        "  python main.py -v             Print version\n"
-        "  python main.py -u             Upgrade to latest version\n"
-        "  python main.py -h             Show this help\n"
+        "  vlog r                        Start recording\n"
+        "  vlog s                        Stop recording\n"
+        "  vlog p -l                     Play latest recording (detached)\n"
+        "  vlog c                        Clear all recordings\n"
+        "  vlog -v                       Print version\n"
+        "  vlog -u                       Upgrade to latest version\n"
+        "  vlog -h                       Show this help\n"
         "\n"
         "Options:\n"
         "  -o, --output-dir <path>       Recording directory (default: ~/Vlogs)\n"
@@ -412,7 +412,7 @@ def play_latest_recording(output_dir: Path) -> int:
 def clear_recordings(output_dir: Path) -> int:
     state = load_state()
     if state and pid_exists(int(state.get("pid", -1))):
-        print("Cannot clear recordings while recording is active. Run: python main.py s")
+        print("Cannot clear recordings while recording is active. Run: vlog s")
         return 1
 
     if not output_dir.exists():
@@ -487,7 +487,7 @@ def main() -> int:
             return clear_recordings(Path(args.output_dir).expanduser())
         if args.command == "p":
             if not args.latest:
-                print("Use: python main.py p -l")
+                print("Use: vlog p -l")
                 return 1
             return play_latest_recording(Path(args.output_dir).expanduser())
         return 1
