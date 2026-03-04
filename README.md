@@ -66,13 +66,14 @@ vlog -h
 1. Screen-only capture
   - Wayland: `wf-recorder`
   - X11: `ffmpeg x11grab`
-2. Webcam + default audio capture (single process for A/V sync)
+2. Webcam + default audio capture (`pulse` source `default`, single process for A/V sync)
 
 `vlog s` stops both captures, then finalizes into one MP4 by:
 
 - Converting screen to grayscale
 - Overlaying webcam at bottom-right edge (no padding)
 - Using webcam-capture audio track (keeps webcam/audio sync)
+- Applying audio post-processing: noise reduction + deeper/bassier voice EQ
 - Web-optimized H.264/AAC output settings
 
 ## Video style
@@ -82,14 +83,12 @@ vlog -h
 - Webcam overlay width: 360px (scaled with aspect ratio preserved)
 - Overlay position: bottom-right edge
 
-## Auto trim (audio-bump based)
+## Audio style
 
-After finalization, output is auto-trimmed using audio activity detection:
-
-- Start trim: `0.8s` before first detected audio bump
-- End trim: `0.5s` after last detected audio bump
-- Noise-aware thresholding is used to handle background noise
-- If no reliable bump window is found, full video is kept
+- Input source is generic/default (`pulse` source `default`)
+- Final audio is processed to reduce background noise
+- Voice tone is shaped to be slightly bassier/deeper
+- No automatic clipping/trimming is applied
 
 ## Install from releases
 

@@ -170,21 +170,6 @@ def detect_webcam_device() -> str | None:
     return None
 
 
-def get_default_audio_source() -> str:
-    if shutil.which("pactl"):
-        try:
-            out = subprocess.check_output(
-                ["pactl", "get-default-source"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            ).strip()
-            if out:
-                return out
-        except Exception:
-            pass
-    return "default"
-
-
 def build_overlay_filter_complex() -> str:
     return (
         f"[0:v]setpts=PTS-STARTPTS,fps={WEB_FPS},scale='min({WEB_MAX_WIDTH},iw)':-2:flags=lanczos,format=gray[bg];"
@@ -227,7 +212,7 @@ def build_screen_command_wayland(screen_file: Path) -> list[str]:
     ]
 
 
-def build_webcam_audio_command(av_file: Path, webcam_device: str, audio_source: str) -> list[str]:
+def build_webcam_audio_command(av_file: Path, webcam_device: str) -> list[str]:
     return [
         "ffmpeg",
         "-y",
@@ -244,7 +229,7 @@ def build_webcam_audio_command(av_file: Path, webcam_device: str, audio_source: 
         "-f",
         "pulse",
         "-i",
-        audio_source,
+        "default",
         "-c:v",
         "libx264",
         "-preset",
@@ -317,7 +302,14 @@ def finalize_recording(screen_file: Path, av_file: Path, output_file: Path) -> t
         "-map",
         "1:a?",
         "-af",
-        "asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0",
+        "asetpts=PTS-STARTPTS,"
+        "highpass=f=70,"
+        "afftdn=nf=-25:tn=1,"
+        "equalizer=f=120:t=q:w=1.0:g=5,"
+        "equalizer=f=220:t=q:w=1.0:g=2.5,"
+        "equalizer=f=2600:t=q:w=1.2:g=-2.0,"
+        "volume=1.8,"
+        "aresample=async=1:first_pts=0",
         "-c:v",
         "libx264",
         "-preset",
@@ -373,7 +365,6 @@ def start_recording(output_dir: Path) -> int:
     screen_file = output_dir / f"{output_file.stem}.screen.mkv"
     av_file = output_dir / f"{output_file.stem}.av.mkv"
     log_file = output_dir / "vlog_recorder.log"
-    audio_source = get_default_audio_source()
 
     session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
     wayland_display = os.environ.get("WAYLAND_DISPLAY")
@@ -396,7 +387,7 @@ def start_recording(output_dir: Path) -> int:
         screen_warmup_only = False
         backend = "x11-split"
 
-    av_cmd = build_webcam_audio_command(av_file, webcam_device, audio_source)
+    av_cmd = build_webcam_audio_command(av_file, webcam_device)
     with log_file.open("ab") as log:
         av_proc = subprocess.Popen(
             av_cmd,
@@ -406,7 +397,7 @@ def start_recording(output_dir: Path) -> int:
             start_new_session=True,
         )
     print("Initializing webcam+audio recorder...")
-    print(f"Using audio source: {audio_source}")
+    print("Using audio source: default")
 
     av_ready = wait_for_recording_start(av_proc, av_file, warmup_only=True, timeout=8.0)
     if not av_ready:
