@@ -3,7 +3,6 @@ import argparse
 import fcntl
 import json
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -171,6 +170,21 @@ def detect_webcam_device() -> str | None:
     return None
 
 
+def get_default_audio_source() -> str:
+    if shutil.which("pactl"):
+        try:
+            out = subprocess.check_output(
+                ["pactl", "get-default-source"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            if out:
+                return out
+        except Exception:
+            pass
+    return "default"
+
+
 def build_overlay_filter_complex() -> str:
     return (
         f"[0:v]setpts=PTS-STARTPTS,fps={WEB_FPS},scale='min({WEB_MAX_WIDTH},iw)':-2:flags=lanczos,format=gray[bg];"
@@ -213,7 +227,7 @@ def build_screen_command_wayland(screen_file: Path) -> list[str]:
     ]
 
 
-def build_webcam_audio_command(av_file: Path, webcam_device: str) -> list[str]:
+def build_webcam_audio_command(av_file: Path, webcam_device: str, audio_source: str) -> list[str]:
     return [
         "ffmpeg",
         "-y",
@@ -230,7 +244,7 @@ def build_webcam_audio_command(av_file: Path, webcam_device: str) -> list[str]:
         "-f",
         "pulse",
         "-i",
-        "default",
+        audio_source,
         "-c:v",
         "libx264",
         "-preset",
@@ -290,6 +304,8 @@ def finalize_recording(screen_file: Path, av_file: Path, output_file: Path) -> t
     cmd = [
         "ffmpeg",
         "-y",
+        "-fflags",
+        "+genpts",
         "-i",
         str(screen_file),
         "-i",
@@ -301,7 +317,7 @@ def finalize_recording(screen_file: Path, av_file: Path, output_file: Path) -> t
         "-map",
         "1:a?",
         "-af",
-        "aresample=async=1:first_pts=0",
+        "asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0",
         "-c:v",
         "libx264",
         "-preset",
@@ -318,7 +334,8 @@ def finalize_recording(screen_file: Path, av_file: Path, output_file: Path) -> t
         "2",
         "-ar",
         "48000",
-        "-shortest",
+        "-avoid_negative_ts",
+        "make_zero",
         "-movflags",
         "+faststart",
         str(tmp_output),
@@ -329,164 +346,6 @@ def finalize_recording(screen_file: Path, av_file: Path, output_file: Path) -> t
 
     tmp_output.replace(output_file)
     return True, ""
-
-
-def probe_duration_seconds(media_file: Path) -> float:
-    cmd = [
-        "ffprobe",
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        str(media_file),
-    ]
-    try:
-        out = subprocess.check_output(cmd, text=True).strip()
-        return float(out)
-    except Exception:
-        return 0.0
-
-
-def estimate_noise_floor_db(media_file: Path) -> float:
-    # Measure early audio to estimate background level and adapt silence detection.
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-nostats",
-        "-i",
-        str(media_file),
-        "-t",
-        "1.5",
-        "-af",
-        "volumedetect",
-        "-f",
-        "null",
-        "-",
-    ]
-    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    log = proc.stderr or ""
-    m = re.search(r"mean_volume:\s*(-?[0-9]+(?:\.[0-9]+)?)\s*dB", log)
-    if not m:
-        return -45.0
-    try:
-        return float(m.group(1))
-    except ValueError:
-        return -45.0
-
-
-def compute_audio_bump_trim_window(media_file: Path) -> tuple[float, float] | None:
-    duration = probe_duration_seconds(media_file)
-    if duration <= 0:
-        return None
-
-    noise_floor = estimate_noise_floor_db(media_file)
-    # Adaptive threshold: keep above background noise but sensitive to soft speech.
-    silence_threshold = max(-45.0, min(-28.0, noise_floor + 8.0))
-
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-nostats",
-        "-i",
-        str(media_file),
-        "-af",
-        f"silencedetect=noise={silence_threshold:.1f}dB:d=0.10",
-        "-f",
-        "null",
-        "-",
-    ]
-    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    log = proc.stderr or ""
-
-    starts = [float(v) for v in re.findall(r"silence_start:\s*([0-9]+(?:\.[0-9]+)?)", log)]
-    ends = [float(v) for v in re.findall(r"silence_end:\s*([0-9]+(?:\.[0-9]+)?)", log)]
-
-    if not starts and not ends:
-        return None
-
-    silences: list[tuple[float, float]] = []
-    pair_count = max(len(starts), len(ends))
-    for idx in range(pair_count):
-        s = starts[idx] if idx < len(starts) else duration
-        e = ends[idx] if idx < len(ends) else duration
-        s = max(0.0, min(duration, s))
-        e = max(s, min(duration, e))
-        silences.append((s, e))
-    silences.sort(key=lambda x: x[0])
-
-    nonsilent: list[tuple[float, float]] = []
-    cursor = 0.0
-    for s, e in silences:
-        if s > cursor:
-            nonsilent.append((cursor, s))
-        cursor = max(cursor, e)
-    if cursor < duration:
-        nonsilent.append((cursor, duration))
-
-    if not nonsilent:
-        return None
-
-    first_bump = nonsilent[0][0]
-    last_bump_end = nonsilent[-1][1]
-    trim_start = max(0.0, first_bump - 0.8)
-    trim_end = min(duration, last_bump_end + 0.5)
-
-    if trim_end - trim_start < 0.5:
-        return None
-    return trim_start, trim_end
-
-
-def trim_final_video_by_audio_bumps(media_file: Path) -> tuple[bool, str]:
-    if not media_file.exists():
-        return False, f"Final output not found: {media_file}"
-
-    window = compute_audio_bump_trim_window(media_file)
-    if not window:
-        return True, "No trim window detected from audio; kept full video."
-
-    trim_start, trim_end = window
-    duration = probe_duration_seconds(media_file)
-    if duration > 0 and trim_start <= 0.001 and trim_end >= duration - 0.001:
-        return True, "Audio bump trim matched full duration; no trimming needed."
-
-    tmp_output = media_file.with_suffix(".trim.mp4")
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-ss",
-        f"{trim_start:.3f}",
-        "-to",
-        f"{trim_end:.3f}",
-        "-i",
-        str(media_file),
-        "-c:v",
-        "libx264",
-        "-preset",
-        WEB_PRESET,
-        "-crf",
-        WEB_CRF,
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        WEB_AUDIO_BITRATE,
-        "-ac",
-        "2",
-        "-ar",
-        "48000",
-        "-movflags",
-        "+faststart",
-        str(tmp_output),
-    ]
-    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if proc.returncode != 0 or not tmp_output.exists():
-        return False, "Failed to trim final video around audio bumps."
-
-    tmp_output.replace(media_file)
-    return True, f"Trimmed to audio bumps window {trim_start:.2f}s - {trim_end:.2f}s."
 
 
 def start_recording(output_dir: Path) -> int:
@@ -514,6 +373,7 @@ def start_recording(output_dir: Path) -> int:
     screen_file = output_dir / f"{output_file.stem}.screen.mkv"
     av_file = output_dir / f"{output_file.stem}.av.mkv"
     log_file = output_dir / "vlog_recorder.log"
+    audio_source = get_default_audio_source()
 
     session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
     wayland_display = os.environ.get("WAYLAND_DISPLAY")
@@ -536,7 +396,7 @@ def start_recording(output_dir: Path) -> int:
         screen_warmup_only = False
         backend = "x11-split"
 
-    av_cmd = build_webcam_audio_command(av_file, webcam_device)
+    av_cmd = build_webcam_audio_command(av_file, webcam_device, audio_source)
     with log_file.open("ab") as log:
         av_proc = subprocess.Popen(
             av_cmd,
@@ -545,7 +405,8 @@ def start_recording(output_dir: Path) -> int:
             stderr=log,
             start_new_session=True,
         )
-        print("Initializing webcam+audio recorder...")
+    print("Initializing webcam+audio recorder...")
+    print(f"Using audio source: {audio_source}")
 
     av_ready = wait_for_recording_start(av_proc, av_file, warmup_only=True, timeout=8.0)
     if not av_ready:
@@ -645,28 +506,19 @@ def stop_recording() -> int:
         if screen_stopped and av_stopped:
             print("Combining screen with webcam+audio...")
             ok, err = finalize_recording(Path(screen_file), Path(av_file), Path(output_file))
-            trim_ok = True
-            trim_msg = ""
-            if ok and output_file:
-                print("Applying audio-bump trim window...")
-                trim_ok, trim_msg = trim_final_video_by_audio_bumps(Path(output_file))
             clear_state()
             Path(screen_file).unlink(missing_ok=True)
             Path(av_file).unlink(missing_ok=True)
             print("Stopped recording.")
-            if ok and trim_ok:
+            if ok:
                 if output_file and Path(output_file).exists():
                     print(f"Saved: {output_file} (grayscale + webcam overlay)")
-                    if trim_msg:
-                        print(trim_msg)
                 else:
                     print("Recorder stopped, but output file was not produced. Check ~/Vlogs/vlog_recorder.log")
             else:
                 print("Finalization failed.")
                 if err:
                     print(err)
-                if trim_msg and not trim_ok:
-                    print(trim_msg)
                 print(f"Raw screen: {screen_file}")
                 print(f"Raw webcam+audio: {av_file}")
             return 0
@@ -703,28 +555,19 @@ def stop_recording() -> int:
 
     print("Combining screen with webcam+audio...")
     ok, err = finalize_recording(Path(screen_file), Path(av_file), Path(output_file))
-    trim_ok = True
-    trim_msg = ""
-    if ok and output_file:
-        print("Applying audio-bump trim window...")
-        trim_ok, trim_msg = trim_final_video_by_audio_bumps(Path(output_file))
     clear_state()
     Path(screen_file).unlink(missing_ok=True)
     Path(av_file).unlink(missing_ok=True)
     print("Stopped recording (forced).")
-    if ok and trim_ok:
+    if ok:
         if output_file and Path(output_file).exists():
             print(f"Saved: {output_file} (grayscale + webcam overlay)")
-            if trim_msg:
-                print(trim_msg)
         else:
             print("Recorder stopped, but output file was not produced. Check ~/Vlogs/vlog_recorder.log")
     else:
         print("Finalization failed after forced stop.")
         if err:
             print(err)
-        if trim_msg and not trim_ok:
-            print(trim_msg)
     return 0
 
 
