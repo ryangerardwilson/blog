@@ -37,6 +37,7 @@ def print_usage_guide() -> None:
         "Usage:\n"
         "  vlog r                        Start recording\n"
         "  vlog s                        Stop recording\n"
+        "  vlog a                        Live webcam align preview\n"
         "  vlog p -l                     Play latest recording (detached)\n"
         "  vlog c                        Clear all recordings\n"
         "  vlog -v                       Print version\n"
@@ -173,7 +174,8 @@ def detect_webcam_device() -> str | None:
 def build_overlay_filter_complex() -> str:
     return (
         f"[0:v]setpts=PTS-STARTPTS,fps={WEB_FPS},scale='min({WEB_MAX_WIDTH},iw)':-2:flags=lanczos,format=gray[bg];"
-        f"[1:v]setpts=PTS-STARTPTS,fps={WEB_FPS},scale={WEBCAM_WIDTH}:-2:flags=lanczos,format=gray[cam];"
+        f"[1:v]setpts=PTS-STARTPTS,fps={WEB_FPS},scale={WEBCAM_WIDTH}:-2:flags=lanczos,format=gray,"
+        "eq=contrast=1.35:brightness=-0.04[cam];"
         "[bg][cam]overlay=x=W-w:y=H-h:format=auto[v]"
     )
 
@@ -788,6 +790,38 @@ def clear_recordings(output_dir: Path) -> int:
     return 0
 
 
+def align_webcam() -> int:
+    if not shutil.which("ffplay"):
+        print("ffplay not found. Install ffmpeg tools to use webcam align preview.")
+        return 1
+    webcam_device = detect_webcam_device()
+    if not webcam_device:
+        print("No webcam device found (/dev/video*).")
+        return 1
+
+    print("Opening webcam align preview. Press 'q' in the preview window to exit.")
+    cmd = [
+        "ffplay",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostats",
+        "-an",
+        "-f",
+        "v4l2",
+        "-framerate",
+        "30",
+        "-video_size",
+        "640x480",
+        "-i",
+        webcam_device,
+        "-vf",
+        f"fps={WEB_FPS},scale={WEBCAM_WIDTH}:-2:flags=lanczos,format=gray,eq=contrast=1.35:brightness=-0.04",
+    ]
+    proc = subprocess.run(cmd, stdin=subprocess.DEVNULL)
+    return proc.returncode
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("-h", "--help", action="store_true", dest="help_flag")
@@ -799,7 +833,7 @@ def main() -> int:
         default=str(DEFAULT_OUTPUT_DIR),
         help="Output directory for recordings (default: ~/Vlogs)",
     )
-    parser.add_argument("command", nargs="?", choices=["r", "s", "c", "p"])
+    parser.add_argument("command", nargs="?", choices=["r", "s", "c", "p", "a"])
     parser.add_argument("-l", "--latest", action="store_true", help="Used with 'p' to play latest")
 
     args = parser.parse_args()
@@ -833,6 +867,8 @@ def main() -> int:
             return stop_recording()
         if args.command == "c":
             return clear_recordings(Path(args.output_dir).expanduser())
+        if args.command == "a":
+            return align_webcam()
         if args.command == "p":
             if not args.latest:
                 print("Use: vlog p -l")
