@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.1.9"
 
 APP = "blog"
 REPO = "ryangerardwilson/blog"
@@ -53,10 +53,10 @@ def print_usage_guide() -> None:
     print(
         "Usage:\n"
         "  blog \"post text\"              Publish text to all configured platforms\n"
-        "  blog -e                       Compose text in $EDITOR and publish\n"
+        "  blog -e                       Compose text in $VISUAL/$EDITOR and publish\n"
         "  blog -m /path/to/media.mp4    Publish media only (or with text/-e)\n"
         "  blog -rec                     Start recording\n"
-        "  blog -rec --debug-sync        Start recording with sync diagnostics\n"
+        "  blog -rec -ds                 Start recording with sync diagnostics\n"
         "  blog -stp                     Stop recording, trim, and publish\n"
         "  blog -rectest                 Stop recording, trim, and save ./output.mp4\n"
         "  blog -v                       Print version\n"
@@ -66,9 +66,9 @@ def print_usage_guide() -> None:
         "Options:\n"
         f"  -o <path>                     Recording directory (default: {DEFAULT_OUTPUT_DIR})\n"
         "  -m <path>                     Media to publish with post\n"
-        "  -e                            Compose post in $EDITOR\n"
+        "  -e                            Compose post in $VISUAL/$EDITOR\n"
         "  -rec                          Start recording\n"
-        "  --debug-sync                  Write ffmpeg/ffprobe sync diagnostics on stop\n"
+        "  -ds                           Write ffmpeg/ffprobe sync diagnostics on stop\n"
         "  -stp                          Stop recording and run trim+publish flow\n"
         "  -rectest                      Stop recording and save output.mp4 in current directory\n"
         "  -a                            Webcam preview helper\n"
@@ -248,7 +248,7 @@ def _build_publish_command(value, text: str | None, media_file: Path | None) -> 
 
 
 def _compose_text_in_editor(initial_text: str = "") -> str:
-    editor = os.getenv("EDITOR", "vim").strip()
+    editor = (os.getenv("VISUAL") or os.getenv("EDITOR") or "vim").strip()
     editor_cmd = shlex.split(editor) if editor else ["vim"]
     if not editor_cmd:
         editor_cmd = ["vim"]
@@ -282,7 +282,7 @@ def prompt_publish_text() -> str | None:
         pass
 
     print("")
-    print("Enter accompanying post text (type 'v' to open $EDITOR, blank to skip publish):")
+    print("Enter accompanying post text (type 'v' to open $VISUAL/$EDITOR, blank to skip publish):")
     raw = input("> ").strip()
     if not raw:
         return None
@@ -1532,9 +1532,9 @@ def main() -> int:
     parser.add_argument("-h", action="store_true", dest="help_flag")
     parser.add_argument("-v", action="store_true", dest="version")
     parser.add_argument("-u", action="store_true", dest="upgrade")
-    parser.add_argument("-e", action="store_true", dest="edit", help="Compose post in $EDITOR.")
+    parser.add_argument("-e", action="store_true", dest="edit", help="Compose post in $VISUAL/$EDITOR.")
     parser.add_argument("-m", dest="media", help="Media path to publish.")
-    parser.add_argument("--debug-sync", action="store_true", dest="debug_sync", help="Write timing diagnostics for recordings.")
+    parser.add_argument("-ds", action="store_true", dest="debug_sync", help="Write timing diagnostics for recordings.")
     parser.add_argument("-rec", action="store_true", help="Start recording.")
     parser.add_argument("-stp", action="store_true", help="Stop recording and run trim+publish flow.")
     parser.add_argument("-rectest", action="store_true", help="Stop recording and save output.mp4 in current directory.")
@@ -1577,7 +1577,7 @@ def main() -> int:
             bool(args.clear),
         ]
         if sum(action_flags) > 1:
-            print("Use only one action flag at a time: -rec, -stp, -rectest, --align, --play-latest, --clear.")
+            print("Use only one action flag at a time: -rec, -stp, -rectest, -a, -pl, -c.")
             return 1
 
         output_dir = Path(args.output_dir).expanduser()
@@ -1597,27 +1597,27 @@ def main() -> int:
             return start_recording(Path(args.output_dir).expanduser(), debug_sync=bool(args.debug_sync))
         if args.stp:
             if args.edit or args.media or args.text or args.debug_sync:
-                print("-stp does not accept post text/media flags or --debug-sync.")
+                print("-stp does not accept post text/media flags or -ds.")
                 return 1
             return stop_recording()
         if args.rectest:
             if args.edit or args.media or args.text or args.debug_sync:
-                print("-rectest does not accept post text/media flags or --debug-sync.")
+                print("-rectest does not accept post text/media flags or -ds.")
                 return 1
             return stop_recording(rectest=True)
         if args.align:
             if args.edit or args.media or args.text or args.debug_sync:
-                print("--align does not accept post text/media flags or --debug-sync.")
+                print("-a does not accept post text/media flags or -ds.")
                 return 1
             return align_webcam()
         if args.play_latest:
             if args.edit or args.media or args.text or args.debug_sync:
-                print("--play-latest does not accept post text/media flags or --debug-sync.")
+                print("-pl does not accept post text/media flags or -ds.")
                 return 1
             return play_latest_recording(output_dir)
         if args.clear:
             if args.edit or args.media or args.text or args.debug_sync:
-                print("--clear does not accept post text/media flags or --debug-sync.")
+                print("-c does not accept post text/media flags or -ds.")
                 return 1
             return clear_recordings(output_dir)
 

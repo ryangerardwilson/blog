@@ -1,0 +1,27 @@
+# blog Agent Guide
+
+## Scope
+- `blog` is a terminal-native publisher and recorder that coordinates local recording flow with explicit downstream publish commands.
+- Keep it keyboard-first and inspectable. It is not a web dashboard or background automation system.
+- Supported primary flows are: publish text/media, compose in-editor, record, stop-and-publish, stop-and-save-test output, align webcam, play latest, clear recordings, version, and upgrade.
+
+## CLI Contract
+- Canonical app flags are short only.
+- Current canonical flags are `-h`, `-v`, `-u`, `-e`, `-m`, `-o`, `-ds`, `-rec`, `-stp`, `-rectest`, `-a`, `-pl`, `-c`.
+- `blog` with no action and no content should print the same help text as `blog -h`.
+- Help, README examples, and runtime error strings must reference only canonical short flags.
+
+## Config And Storage
+- Config lives at `~/.config/blog/config.json` unless `XDG_CONFIG_HOME` overrides it.
+- Cache lives under `~/.cache/blog/`, recordings under `~/.cache/blog/recordings`, and recorder state under `~/.local/state/blog/` unless XDG env vars override them.
+- Keep config as plain JSON with explicit publish-command shape.
+- Preserve the structured publish config form using `command`, `text_args`, and `media_args`.
+
+## Integration Rules
+- `blog` shells out to downstream publisher CLIs explicitly; avoid hidden integration layers.
+- Any example config shipped in repo should target the canonical short-flag contracts of `x` and `linkedin`.
+
+## Editing And UX
+- Editor resolution order is `$VISUAL`, then `$EDITOR`, then `vim`.
+- Keep help text dense, example-driven, and command-shaped.
+- Keep output plain-text and operationally useful.

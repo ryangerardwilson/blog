@@ -10,7 +10,7 @@ Publish text to all configured platforms:
 python main.py "hello, world"
 ```
 
-Compose in `$EDITOR` and publish:
+Compose in `$VISUAL`, then `$EDITOR`, and publish:
 
 ```bash
 python main.py -e
@@ -39,7 +39,7 @@ python main.py -rec
 Start recording with sync diagnostics (writes a `sync_report_*.json` on stop):
 
 ```bash
-python main.py -rec --debug-sync
+python main.py -rec -ds
 ```
 
 Stop recording, open trim UI, prompt for publish text, then publish:
@@ -58,13 +58,14 @@ After `-stp`, recorder cache files in the output directory are auto-cleared, so 
 
 ## Other flags
 
-- `-u`, `--upgrade`: upgrade to latest release
-- `-v`, `--version`: print version
-- `-h`, `--help`: show help
-- `-o`, `--output-dir`: recording directory (default: `~/.cache/blog/recordings`)
-- `--align`: webcam preview helper
-- `--play-latest`: detached playback of latest recording
-- `--clear`: clear saved recordings
+- `-u`: upgrade to latest release
+- `-v`: print version
+- `-h`: show help
+- `-o`: recording directory (default: `~/.cache/blog/recordings`)
+- `-ds`: write sync diagnostics for a recording run
+- `-a`: webcam preview helper
+- `-pl`: detached playback of latest recording
+- `-c`: clear saved recordings
 
 ## XDG config
 
