@@ -16,7 +16,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-__version__ = "0.1.9"
+try:
+    from _version import __version__
+except Exception:
+    __version__ = "0.0.0-dev"
 
 APP = "blog"
 REPO = "ryangerardwilson/blog"

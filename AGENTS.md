@@ -25,3 +25,7 @@
 - Editor resolution order is `$VISUAL`, then `$EDITOR`, then `vim`.
 - Keep help text dense, example-driven, and command-shaped.
 - Keep output plain-text and operationally useful.
+
+## Release Guardrails
+- Use a single runtime version module and have GitHub Actions inject the tag-derived release version during the build.
+- Do not hand-edit checked-in release numbers before tagging.
