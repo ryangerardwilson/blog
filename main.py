@@ -73,6 +73,8 @@ def print_usage_guide() -> None:
         "    print the installed version\n"
         "  blog -u\n"
         "    upgrade to the latest release\n"
+        "  blog conf\n"
+        "    open the config in $VISUAL/$EDITOR\n"
         "\n"
         "features:\n"
         "  publish text or media to the configured downstream CLIs\n"
@@ -295,6 +297,20 @@ def _compose_text_in_editor(initial_text: str = "") -> str:
             temp_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def open_config_in_editor() -> int:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONFIG_FILE.exists():
+        CONFIG_FILE.write_text(
+            json.dumps(default_config(), indent=2) + "\n",
+            encoding="utf-8",
+        )
+    editor = (os.getenv("VISUAL") or os.getenv("EDITOR") or "vim").strip()
+    editor_cmd = shlex.split(editor) if editor else ["vim"]
+    if not editor_cmd:
+        editor_cmd = ["vim"]
+    return subprocess.run([*editor_cmd, str(CONFIG_FILE)], check=False).returncode
 
 
 def prompt_publish_text() -> str | None:
@@ -1555,6 +1571,9 @@ def align_webcam() -> int:
 
 
 def main() -> int:
+    if len(sys.argv) == 2 and sys.argv[1] == "conf":
+        return open_config_in_editor()
+
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("-h", action="store_true", dest="help_flag")
     parser.add_argument("-v", action="store_true", dest="version")
