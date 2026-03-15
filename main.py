@@ -137,16 +137,6 @@ def _fetch_latest_version() -> str:
 
 
 def upgrade_to_latest() -> int:
-    try:
-        latest = _fetch_latest_version()
-    except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-
-    if latest == __version__:
-        print(f"{APP} is already up to date (v{__version__}).")
-        return 0
-
     curl = shutil.which("curl")
     bash = shutil.which("bash")
     if not curl:
@@ -165,7 +155,7 @@ def upgrade_to_latest() -> int:
         if fetch.returncode != 0:
             print("Failed to download installer script.", file=sys.stderr)
             return fetch.returncode
-        run = subprocess.run([bash, str(tmp_path), "--version", latest])
+        run = subprocess.run([bash, str(tmp_path), "-u"])
         return run.returncode
     finally:
         try:

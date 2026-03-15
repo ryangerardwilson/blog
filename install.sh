@@ -20,13 +20,15 @@ Usage: install.sh [options]
 
 Options:
   -h, --help              Display this help message
-  -v, --version <version> Install a specific version (e.g., 0.1.0 or v0.1.0)
+  -v, --version [version] Print the latest release version, or install a specific version
+  -u, --upgrade           Upgrade to the latest release when newer than installed
   -b, --binary <path>     Install from a local binary instead of downloading
       --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash
-  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s -- --version 0.1.0
+  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s -- -v 0.1.0
+  ./install.sh -u
   ./install.sh --binary /path/to/blog
 USAGE
 }
@@ -34,14 +36,24 @@ USAGE
 requested_version=${VERSION:-}
 no_modify_path=false
 binary_path=""
+show_latest=false
+upgrade=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     -v|--version)
-      [[ -n "${2:-}" ]] || { echo -e "${RED}Error: --version requires an argument${NC}"; exit 1; }
-      requested_version="$2"
-      shift 2
+      if [[ -n "${2:-}" && "${2:0:1}" != "-" ]]; then
+        requested_version="$2"
+        shift 2
+      else
+        show_latest=true
+        shift
+      fi
+      ;;
+    -u|--upgrade)
+      upgrade=true
+      shift
       ;;
     -b|--binary)
       [[ -n "${2:-}" ]] || { echo -e "${RED}Error: --binary requires a path${NC}"; exit 1; }
@@ -66,6 +78,43 @@ print_message() {
   [[ "$level" == "error" ]] && color="${RED}"
   echo -e "${color}${message}${NC}"
 }
+
+get_latest_version() {
+  local latest=""
+  if command -v gh >/dev/null 2>&1; then
+    latest="$(gh release view --repo "${REPO}" --json tagName --jq '.tagName' 2>/dev/null || true)"
+    latest="${latest#v}"
+  fi
+  if [[ -z "$latest" ]]; then
+    command -v curl >/dev/null 2>&1 || { print_message error "'curl' is required but not installed."; exit 1; }
+    latest="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest" \
+      | sed -n 's#.*/releases/tag/v\([^/?#[:space:]]*\).*#\1#p')"
+  fi
+  [[ -n "$latest" ]] || { print_message error "Unable to determine the latest release version"; exit 1; }
+  printf '%s\n' "$latest"
+}
+
+if $show_latest; then
+  [[ "$upgrade" == false && -z "$binary_path" && -z "$requested_version" ]] || {
+    print_message error "-v (no arg) cannot be combined with other options"
+    exit 1
+  }
+  get_latest_version
+  exit 0
+fi
+
+if $upgrade; then
+  [[ -z "$binary_path" ]] || { print_message error "-u cannot be used with -b/--binary"; exit 1; }
+  [[ -z "$requested_version" ]] || { print_message error "-u cannot be combined with -v"; exit 1; }
+  requested_version="$(get_latest_version)"
+  if command -v "${APP}" >/dev/null 2>&1; then
+    installed_version="$(${APP} -v 2>/dev/null || true)"
+    if [[ -n "$installed_version" && "$installed_version" == "$requested_version" ]]; then
+      print_message info "${MUTED}${APP} version ${NC}${requested_version}${MUTED} already installed${NC}"
+      exit 0
+    fi
+  fi
+fi
 
 mkdir -p "$INSTALL_DIR"
 
@@ -96,10 +145,9 @@ else
   mkdir -p "$APP_DIR"
 
   if [[ -z "$requested_version" ]]; then
+    requested_version="$(get_latest_version)"
     url="https://github.com/${REPO}/releases/latest/download/${filename}"
-    specific_version="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-      | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' || true)"
-    [[ -n "$specific_version" ]] || specific_version="latest"
+    specific_version="${requested_version}"
   else
     requested_version="${requested_version#v}"
     url="https://github.com/${REPO}/releases/download/v${requested_version}/${filename}"
