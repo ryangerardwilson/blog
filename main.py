@@ -146,7 +146,7 @@ def upgrade_to_latest() -> int:
         print("bash not found in PATH.", file=sys.stderr)
         return 1
 
-    print(f"Upgrading {APP} from v{__version__} to v{latest}...")
+    print(f"Running {APP} upgrade...")
     with tempfile.NamedTemporaryFile(suffix=".sh", delete=False) as tmp:
         tmp_path = Path(tmp.name)
 
