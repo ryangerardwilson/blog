@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import curses
 import fcntl
 import json
@@ -17,11 +16,13 @@ import urllib.request
 from pathlib import Path
 
 from _version import __version__
-from rgw_cli_contract import AppSpec, resolve_install_script_path, run_app
 
 APP = "blog"
 REPO = "ryangerardwilson/blog"
-INSTALL_SCRIPT = resolve_install_script_path(__file__)
+ANSI_GRAY = "\033[38;5;245m"
+ANSI_RESET = "\033[0m"
+INSTALL_SCRIPT = Path(__file__).resolve().with_name("install.sh")
+INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/ryangerardwilson/blog/main/install.sh"
 
 LOCK_FILE = Path("/tmp/blog_recorder_cli.lock")
 XDG_CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
@@ -48,38 +49,32 @@ flags:
     print the installed version
   blog -u
     upgrade to the latest release
-  blog conf
-    open the config in $VISUAL/$EDITOR
 
 features:
+  open the publish config in the editor resolved from $VISUAL, then $EDITOR, then vim
+  # blog config
+  blog config
+
   publish text or media to the configured downstream CLIs
-  # blog p <text> | blog p -m <path> [<text>] | blog p -e
-  blog p "ship the patch"
-  blog p -m ~/media/demo.mp4 "ship the patch"
-  blog p -e
+  # blog publish <text> | blog publish media <path> body <text> | blog publish in editor
+  blog publish "ship the patch"
+  blog publish media ~/media/demo.mp4 body "ship the patch"
+  blog publish in editor
 
-  start recording, optionally with sync diagnostics
-  # blog -rec [-ds] [-o <path>]
-  blog -rec
-  blog -rec -ds -o {DEFAULT_OUTPUT_DIR}
+  start or stop the local recording flow
+  # blog record start | blog record stop and publish | blog record stop and save
+  blog record start
+  blog record stop and publish
+  blog record stop and save
 
-  stop recording, trim, and publish through the configured downstream CLIs
-  # blog -stp
-  blog -stp
+  align the webcam preview before recording
+  # blog camera align
+  blog camera align
 
-  stop recording, trim, and save ./output.mp4 without publishing
-  # blog -rectest
-  blog -rectest
-
-  inspect or clean the recording workspace
-  # blog -a | blog -pl [-o <path>] | blog -c [-o <path>]
-  blog -a
-  blog -pl
-  blog -c
-
-  current canonical flags
-  # -m <path>  -o <path>  -ds  -rec  -stp  -rectest  -a  -pl  -c
-  # default recording dir: {DEFAULT_OUTPUT_DIR}
+  play or clear saved recordings
+  # blog recordings play latest | blog recordings clear
+  blog recordings play latest
+  blog recordings clear
 """
 
 
@@ -87,21 +82,61 @@ def default_config() -> dict:
     return {
         "publish": {
             "x": {
-                "command": ["x", "p"],
+                "command": ["x", "post"],
                 "text_args": ["{text}"],
-                "media_args": ["-m", "{media}"],
+                "media_args": ["with", "media", "{media}"],
             },
             "linkedin": {
-                "command": ["linkedin", "p"],
+                "command": ["linkedin", "post"],
                 "text_args": ["{text}"],
-                "media_args": ["-m", "{media}"],
+                "media_args": ["with", "media", "{media}"],
             },
         }
     }
 
 
+def muted(text: str) -> str:
+    if not sys.stdout.isatty() or "NO_COLOR" in os.environ:
+        return text
+    return f"{ANSI_GRAY}{text}{ANSI_RESET}"
+
+
+def print_help() -> None:
+    print(muted(HELP_TEXT.rstrip()))
+
+
 def print_usage_guide() -> None:
-    print(HELP_TEXT.rstrip())
+    print_help()
+
+
+def upgrade_app() -> int:
+    if INSTALL_SCRIPT.exists():
+        result = subprocess.run(
+            ["/usr/bin/env", "bash", str(INSTALL_SCRIPT), "-u"],
+            check=False,
+            text=True,
+            env=os.environ.copy(),
+        )
+        return result.returncode
+
+    with urllib.request.urlopen(INSTALL_SCRIPT_URL) as response:
+        script_body = response.read()
+
+    with tempfile.NamedTemporaryFile(delete=False) as handle:
+        handle.write(script_body)
+        script_path = Path(handle.name)
+
+    try:
+        script_path.chmod(0o700)
+        result = subprocess.run(
+            ["/usr/bin/env", "bash", str(script_path), "-u"],
+            check=False,
+            text=True,
+            env=os.environ.copy(),
+        )
+        return result.returncode
+    finally:
+        script_path.unlink(missing_ok=True)
 
 
 def pid_exists(pid: int) -> bool:
@@ -188,7 +223,7 @@ def _resolve_tokens(tokens: list[str], text: str | None, media_file: Path | None
 
 
 def _build_publish_command(value, text: str | None, media_file: Path | None) -> list[str]:
-    # Advanced config form:
+    # Structured config form:
     # {
     #   "command": ["mycli", "publish"],
     #   "text_args": ["--caption", "{text}"],
@@ -205,8 +240,7 @@ def _build_publish_command(value, text: str | None, media_file: Path | None) -> 
             cmd.extend(_resolve_tokens(_publish_command_tokens(value.get("media_args")), text, media_file))
         return cmd
 
-    # Backward-compatible form:
-    # "x" or ["x", "--some-flag"]
+    # Simple config form for downstream CLIs that accept text/media positionally.
     base = _publish_command_tokens(value)
     if not base:
         return []
@@ -308,7 +342,7 @@ def preflight_publish_auth(config: dict) -> tuple[bool, list[str]]:
         executable = os.path.basename(cmd[0])
         if executable not in ("x", "linkedin"):
             continue
-        proc = subprocess.run([cmd[0], "ea"])
+        proc = subprocess.run([cmd[0], "auth", "check"])
         if proc.returncode != 0:
             failures.append(f"{target_name}: auth preflight failed with exit code {proc.returncode}")
     return len(failures) == 0, failures
@@ -945,20 +979,6 @@ def cleanup_recording_cache(output_dir: Path) -> None:
         print(f"Cleared {deleted} cached file(s) from: {output_dir}")
 
 
-def _split_text_and_media_arg(text_parts: list[str], explicit_media: str | None) -> tuple[str | None, Path | None]:
-    parts = list(text_parts)
-    media = Path(explicit_media).expanduser() if explicit_media else None
-
-    if media is None and parts:
-        candidate = Path(parts[-1]).expanduser()
-        if candidate.is_file():
-            media = candidate
-            parts.pop()
-
-    text = " ".join(parts).strip()
-    return (text if text else None), media
-
-
 def publish_from_cli(text: str | None, media_file: Path | None) -> int:
     if media_file is not None and not media_file.is_file():
         print(f"Media file not found: {media_file}")
@@ -1452,7 +1472,7 @@ def clear_recordings(output_dir: Path) -> int:
     av_pid = int(state.get("av_pid", -1)) if state else -1
     recorder_pid = int(state.get("recorder_pid", -1)) if state else -1
     if state and (pid_exists(screen_pid) or pid_exists(av_pid) or pid_exists(recorder_pid)):
-        print("Cannot clear recordings while recording is active. Run: blog -stp")
+        print("Cannot clear recordings while recording is active. Run: blog record stop and publish")
         return 1
 
     if not output_dir.exists():
@@ -1512,27 +1532,100 @@ def align_webcam() -> int:
     return proc.returncode
 
 
-def _dispatch(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("-e", action="store_true", dest="edit", help="Compose post in $VISUAL/$EDITOR.")
-    parser.add_argument("-m", dest="media", help="Media path to publish.")
-    parser.add_argument("-ds", action="store_true", dest="debug_sync", help="Write timing diagnostics for recordings.")
-    parser.add_argument("-rec", action="store_true", help="Start recording.")
-    parser.add_argument("-stp", action="store_true", help="Stop recording and run trim+publish flow.")
-    parser.add_argument("-rectest", action="store_true", help="Stop recording and save output.mp4 in current directory.")
-    parser.add_argument("-a", action="store_true", dest="align", help="Open webcam align preview.")
-    parser.add_argument("-pl", action="store_true", dest="play_latest", help="Play latest recording.")
-    parser.add_argument("-c", action="store_true", dest="clear", help="Clear saved recordings.")
-    parser.add_argument(
-        "-o",
-        dest="output_dir",
-        default=str(DEFAULT_OUTPUT_DIR),
-        help=f"Output directory for recordings (default: {DEFAULT_OUTPUT_DIR})",
-    )
-    parser.add_argument("command", nargs="?")
-    parser.add_argument("text", nargs="*", help="Post text.")
+def _publish_shape() -> str:
+    return "valid shape: blog publish <text> | blog publish media <path> body <text> | blog publish in editor"
 
-    args = parser.parse_args(argv)
+
+def _dispatch_publish(args: list[str]) -> int:
+    if not args:
+        print(_publish_shape())
+        return 1
+
+    if args == ["in", "editor"]:
+        text = _compose_text_in_editor("")
+        if not text:
+            print("No content; cancelled.")
+            return 1
+        return publish_from_cli(text, None)
+
+    if args[0] == "media":
+        if len(args) < 4 or args[2] != "body":
+            print(_publish_shape())
+            return 1
+        media_file = Path(args[1]).expanduser()
+        text = " ".join(args[3:]).strip()
+        if not text:
+            print("Body text is required.")
+            return 1
+        return publish_from_cli(text, media_file)
+
+    if any(arg in {"-e", "-m"} for arg in args):
+        print(_publish_shape())
+        return 1
+
+    text = " ".join(args).strip()
+    if not text:
+        print(_publish_shape())
+        return 1
+    return publish_from_cli(text, None)
+
+
+def _dispatch_record(args: list[str]) -> int:
+    if args == ["start"]:
+        config = load_or_init_config()
+        ok, failures = preflight_publish_auth(config)
+        if not ok:
+            print("Publish auth preflight failed:")
+            for failure in failures:
+                print(f"- {failure}")
+            print("Recording did not start.")
+            return 1
+        return start_recording(DEFAULT_OUTPUT_DIR, debug_sync=False)
+
+    if args == ["stop", "and", "publish"]:
+        return stop_recording()
+
+    if args == ["stop", "and", "save"]:
+        return stop_recording(rectest=True)
+
+    print("valid shape: blog record start | blog record stop and publish | blog record stop and save")
+    return 1
+
+
+def _dispatch_camera(args: list[str]) -> int:
+    if args == ["align"]:
+        return align_webcam()
+    print("valid shape: blog camera align")
+    return 1
+
+
+def _dispatch_recordings(args: list[str]) -> int:
+    if args == ["play", "latest"]:
+        return play_latest_recording(DEFAULT_OUTPUT_DIR)
+    if args == ["clear"]:
+        return clear_recordings(DEFAULT_OUTPUT_DIR)
+    print("valid shape: blog recordings play latest | blog recordings clear")
+    return 1
+
+
+def _dispatch_locked(argv: list[str]) -> int:
+    command = argv[0]
+    command_args = argv[1:]
+    if command == "publish":
+        return _dispatch_publish(command_args)
+    if command == "record":
+        return _dispatch_record(command_args)
+    if command == "camera":
+        return _dispatch_camera(command_args)
+    if command == "recordings":
+        return _dispatch_recordings(command_args)
+    print("valid commands: blog publish | blog record | blog camera | blog recordings | blog config")
+    return 1
+
+
+def _dispatch(argv: list[str]) -> int:
+    if argv == ["config"]:
+        return open_config_in_editor()
 
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     with LOCK_FILE.open("w") as lock_fp:
@@ -1541,102 +1634,25 @@ def _dispatch(argv: list[str]) -> int:
         except BlockingIOError:
             print("Another instance of this CLI is currently running.")
             return 1
-
-        action_flags = [
-            bool(args.rec),
-            bool(args.stp),
-            bool(args.rectest),
-            bool(args.align),
-            bool(args.play_latest),
-            bool(args.clear),
-        ]
-        if args.command and args.command != "p":
-            print("Use: blog p <text> | blog p -m <path> [<text>] | blog p -e")
-            return 1
-        if sum(action_flags) > 1:
-            print("Use only one action flag at a time: -rec, -stp, -rectest, -a, -pl, -c.")
-            return 1
-        if any(action_flags) and args.command:
-            print("Recorder actions do not accept a publish command.")
-            return 1
-
-        output_dir = Path(args.output_dir).expanduser()
-
-        if args.rec:
-            if args.edit or args.media or args.text:
-                print("-rec does not accept post text/media flags.")
-                return 1
-            config = load_or_init_config()
-            ok, failures = preflight_publish_auth(config)
-            if not ok:
-                print("Publish auth preflight failed:")
-                for failure in failures:
-                    print(f"- {failure}")
-                print("Recording did not start.")
-                return 1
-            return start_recording(Path(args.output_dir).expanduser(), debug_sync=bool(args.debug_sync))
-        if args.stp:
-            if args.edit or args.media or args.text or args.debug_sync:
-                print("-stp does not accept post text/media flags or -ds.")
-                return 1
-            return stop_recording()
-        if args.rectest:
-            if args.edit or args.media or args.text or args.debug_sync:
-                print("-rectest does not accept post text/media flags or -ds.")
-                return 1
-            return stop_recording(rectest=True)
-        if args.align:
-            if args.edit or args.media or args.text or args.debug_sync:
-                print("-a does not accept post text/media flags or -ds.")
-                return 1
-            return align_webcam()
-        if args.play_latest:
-            if args.edit or args.media or args.text or args.debug_sync:
-                print("-pl does not accept post text/media flags or -ds.")
-                return 1
-            return play_latest_recording(output_dir)
-        if args.clear:
-            if args.edit or args.media or args.text or args.debug_sync:
-                print("-c does not accept post text/media flags or -ds.")
-                return 1
-            return clear_recordings(output_dir)
-
-        text, media_file = _split_text_and_media_arg(args.text, args.media)
-
-        if args.edit:
-            if text is not None:
-                print("Use either -e or provide text, not both.")
-                return 1
-            text = _compose_text_in_editor("")
-            if not text:
-                print("No content; cancelled.")
-                return 1
-
-        if args.command != "p":
-            print_usage_guide()
-            return 1
-
-        if text is None and media_file is None:
-            print_usage_guide()
-            return 1
-
-        return publish_from_cli(text, media_file)
-
-
-APP_SPEC = AppSpec(
-    app_name="blog",
-    version=__version__,
-    help_text=HELP_TEXT,
-    install_script_path=INSTALL_SCRIPT,
-    no_args_mode="help",
-    config_path_factory=lambda: CONFIG_FILE,
-    config_bootstrap_text=json.dumps(default_config(), indent=2) + "\n",
-)
+        return _dispatch_locked(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    return run_app(APP_SPEC, args, _dispatch)
+    if not args:
+        print_help()
+        return 0
+    if args == ["-h"]:
+        print_help()
+        return 0
+    if args == ["-v"]:
+        print(__version__)
+        return 0
+    if args == ["-u"]:
+        return upgrade_app()
+    if args[0] in {"-h", "-v", "-u"}:
+        raise SystemExit("Use blog -h, blog -v, or blog -u by itself.")
+    return _dispatch(args)
 
 
 if __name__ == "__main__":

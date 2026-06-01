@@ -1,14 +1,14 @@
 {
   "publish": {
     "x": {
-      "command": ["x", "p"],
+      "command": ["x", "post"],
       "text_args": ["{text}"],
-      "media_args": ["-m", "{media}"]
+      "media_args": ["with", "media", "{media}"]
     },
     "linkedin": {
-      "command": ["linkedin", "p"],
+      "command": ["linkedin", "post"],
       "text_args": ["{text}"],
-      "media_args": ["-m", "{media}"]
+      "media_args": ["with", "media", "{media}"]
     }
   }
 }

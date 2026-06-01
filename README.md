@@ -31,33 +31,33 @@ flags:
   blog -u
 
 features:
+  open the publish config in the editor
+  # blog config
+  blog config
+
   publish text or media to the configured downstream CLIs
-  # blog p <text> | blog p -m <path> [<text>] | blog p -e
-  blog p "ship the patch"
-  blog p -m ~/media/demo.mp4 "ship the patch"
-  blog p -e
+  # blog publish <text> | blog publish media <path> body <text> | blog publish in editor
+  blog publish "ship the patch"
+  blog publish media ~/media/demo.mp4 body "ship the patch"
+  blog publish in editor
 
-  start recording, optionally with sync diagnostics
-  # blog -rec [-ds] [-o <path>]
-  blog -rec
-  blog -rec -ds
+  start or stop the local recording flow
+  # blog record start | blog record stop and publish | blog record stop and save
+  blog record start
+  blog record stop and publish
+  blog record stop and save
 
-  stop recording, trim, and publish
-  # blog -stp
-  blog -stp
+  align the webcam preview before recording
+  # blog camera align
+  blog camera align
 
-  stop recording, trim, and save ./output.mp4 without publishing
-  # blog -rectest
-  blog -rectest
-
-  inspect or clean the recording workspace
-  # blog -a | blog -pl [-o <path>] | blog -c [-o <path>]
-  blog -a
-  blog -pl
-  blog -c
+  play or clear saved recordings
+  # blog recordings play latest | blog recordings clear
+  blog recordings play latest
+  blog recordings clear
 ```
 
-After `-stp`, recorder cache files in the output directory are auto-cleared.
+After `blog record stop and publish`, recorder cache files are auto-cleared.
 
 ## Config
 
@@ -70,7 +70,7 @@ Config path:
 Open it with:
 
 ```bash
-blog conf
+blog config
 ```
 
 Auto-created on first publish if missing. Template in repo: `template_config.json`
@@ -81,14 +81,14 @@ Default:
 {
   "publish": {
     "x": {
-      "command": ["x", "p"],
+      "command": ["x", "post"],
       "text_args": ["{text}"],
-      "media_args": ["-m", "{media}"]
+      "media_args": ["with", "media", "{media}"]
     },
     "linkedin": {
-      "command": ["linkedin", "p"],
+      "command": ["linkedin", "post"],
       "text_args": ["{text}"],
-      "media_args": ["-m", "{media}"]
+      "media_args": ["with", "media", "{media}"]
     }
   }
 }
@@ -96,7 +96,7 @@ Default:
 
 Config forms:
 - Simple: `"x": "x"` or `["x"]`, which appends text and media positionally.
-- Structured: `command` + `text_args` + `media_args`, recommended when the downstream CLI uses a verb such as `p` and expects an explicit media flag.
+- Structured: `command` + `text_args` + `media_args`, recommended when the downstream CLI uses connector words around media.
 
 Placeholder tokens:
 - `{text}` becomes the post text.
